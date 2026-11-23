@@ -1,21 +1,25 @@
-"""Streamlit app: plot an arbitrary function x(t) -- single file, no extra packages.
+"""Streamlit app: plot an arbitrary function f(x) on a graph-paper style sheet.
 
-Uses only streamlit, numpy and pandas (all of which come with Streamlit),
-so no requirements.txt is needed.
+Single file. Uses only streamlit, numpy, pandas and altair, all of which are
+installed together with Streamlit, so no requirements.txt is needed.
 
 Run with:
-    streamlit run plot_xt_streamlit.py
+    streamlit run plot_fx_streamlit.py
 """
 
 import ast
+import math
 
+import altair as alt
 import numpy as np
 import pandas as pd
 import streamlit as st
 
+# ---------------------------------------------------------------- expression parsing
+
 # Names the user is allowed to use inside the expression
 ALLOWED = {
-    "t": None,  # the variable, filled in at evaluation time
+    "x": None,  # the variable, filled in at evaluation time
     "pi": np.pi,
     "e": np.e,
     "E": np.e,
@@ -26,9 +30,9 @@ ALLOWED = {
     "sqrt": np.sqrt, "abs": np.abs, "sign": np.sign,
     "floor": np.floor, "ceil": np.ceil,
     "min": np.minimum, "max": np.maximum,
-    "where": np.where,                      # where(t < 0, 0, t)
-    "Heaviside": lambda x: np.heaviside(x, 0.5),
-    "heaviside": lambda x: np.heaviside(x, 0.5),
+    "where": np.where,                      # where(x < 0, 0, x)
+    "Heaviside": lambda v: np.heaviside(v, 0.5),
+    "heaviside": lambda v: np.heaviside(v, 0.5),
 }
 
 ALLOWED_NODES = (
@@ -41,7 +45,7 @@ ALLOWED_NODES = (
 
 
 def compile_function(text):
-    """Validate the text and return a function x_of_t(tt) that works on numpy arrays."""
+    """Validate the text and return a function f(xx) that works on numpy arrays."""
     text = text.strip().replace("^", "**")
     if not text:
         raise ValueError("empty expression")
@@ -55,53 +59,145 @@ def compile_function(text):
         if isinstance(node, ast.Call):
             if not isinstance(node.func, ast.Name) or node.keywords:
                 raise ValueError("only simple function calls are allowed")
-            if node.func.id == "t" or not callable(ALLOWED[node.func.id]):
+            if node.func.id == "x" or not callable(ALLOWED[node.func.id]):
                 raise ValueError(f"'{node.func.id}' is not a function")
         if isinstance(node, ast.Constant) and not isinstance(node.value, (int, float)):
             raise ValueError("only numbers are allowed as constants")
 
-    code = compile(tree, "<x(t)>", "eval")
+    code = compile(tree, "<f(x)>", "eval")
 
-    def x_of_t(tt):
-        env = dict(ALLOWED, t=tt)
+    def f(xx):
+        env = dict(ALLOWED, x=xx)
         y = np.asarray(eval(code, {"__builtins__": {}}, env), dtype=float)
-        return np.broadcast_to(y, np.shape(tt)).copy()  # handles constants like "5"
+        return np.broadcast_to(y, np.shape(xx)).copy()  # handles constants like "5"
 
-    return x_of_t
+    return f
 
 
-st.set_page_config(page_title="x(t) plotter", page_icon="📈")
-st.title("Plot x(t)")
+# ---------------------------------------------------------------- graph-paper helpers
+
+def nice_step(span, target=10):
+    """A 1/2/5 x 10^k step that gives roughly `target` divisions across `span`."""
+    raw = span / target
+    mag = 10 ** math.floor(math.log10(raw))
+    for m in (1, 2, 5, 10):
+        if raw <= m * mag:
+            return m * mag
+    return 10 * mag
+
+
+def grid_values(lo, hi, step):
+    first = math.ceil(lo / step - 1e-9)
+    last = math.floor(hi / step + 1e-9)
+    return np.round(np.arange(first, last + 1) * step, 10)
+
+
+def graph_sheet(df, xlo, xhi, ylo, yhi):
+    """Build the Altair chart: minor grid, major grid, axes through the origin, curve."""
+    xstep, ystep = nice_step(xhi - xlo), nice_step(yhi - ylo)
+    xmajor, ymajor = grid_values(xlo, xhi, xstep), grid_values(ylo, yhi, ystep)
+    xminor, yminor = grid_values(xlo, xhi, xstep / 5), grid_values(ylo, yhi, ystep / 5)
+
+    xscale = alt.Scale(domain=[xlo, xhi], nice=False, zero=False)
+    yscale = alt.Scale(domain=[ylo, yhi], nice=False, zero=False)
+
+    def vlines(values, color, width):
+        return alt.Chart(pd.DataFrame({"v": values})).mark_rule(
+            color=color, strokeWidth=width
+        ).encode(x=alt.X("v:Q", scale=xscale, axis=None))
+
+    def hlines(values, color, width):
+        return alt.Chart(pd.DataFrame({"v": values})).mark_rule(
+            color=color, strokeWidth=width
+        ).encode(y=alt.Y("v:Q", scale=yscale, axis=None))
+
+    minor_c, major_c, axis_c = "#cfe8d5", "#84c295", "#1b1b1b"
+    layers = [
+        vlines(xminor, minor_c, 0.6), hlines(yminor, minor_c, 0.6),
+        vlines(xmajor, major_c, 1.1), hlines(ymajor, major_c, 1.1),
+    ]
+    if xlo <= 0 <= xhi:
+        layers.append(vlines([0], axis_c, 2))
+    if ylo <= 0 <= yhi:
+        layers.append(hlines([0], axis_c, 2))
+
+    label_style = dict(labelColor="#222", titleColor="#222", labelFontSize=11,
+                       titleFontSize=13, domain=False, grid=False, format="~g")
+    curve = alt.Chart(df).mark_line(color="#d62728", strokeWidth=2.6, clip=True).encode(
+        x=alt.X("x:Q", scale=xscale,
+                axis=alt.Axis(values=xmajor.tolist(), title="x", **label_style)),
+        y=alt.Y("y:Q", scale=yscale,
+                axis=alt.Axis(values=ymajor.tolist(), title="f(x)", **label_style)),
+        tooltip=[alt.Tooltip("x:Q", format=".4g"), alt.Tooltip("y:Q", title="f(x)", format=".4g")],
+    )
+    layers.append(curve)
+
+    return (
+        alt.layer(*layers)
+        .properties(height=560)
+        .configure_view(fill="#fbfff9", stroke="#555", strokeWidth=1.5)
+    )
+
+
+# ---------------------------------------------------------------- the app
+
+st.set_page_config(page_title="f(x) plotter", page_icon="📈", layout="wide")
+st.title("Plot f(x)")
 
 text = st.text_input(
-    "x(t) =",
-    value="sin(2*pi*t) * exp(-t/3)",
-    help="Use t as the variable. Powers: ** or ^. Use * for multiplication (write 2*t, not 2t).",
+    "f(x) =",
+    value="sin(x) * exp(-x/8)",
+    help="Use x as the variable. Powers: ** or ^. Use * for multiplication (write 2*x, not 2x).",
 )
 st.caption(
     "Available: sin, cos, tan, asin, acos, atan, sinh, cosh, tanh, exp, log, ln, log10, "
     "sqrt, abs, sign, floor, ceil, min, max, Heaviside, where(cond, a, b), pi, e. "
-    "Example: where(t < 1, t, 1)"
+    "Example: where(x < 1, x, 1)"
 )
 
-col1, col2, col3 = st.columns(3)
-t_min = col1.number_input("t start", value=0.0)
-t_max = col2.number_input("t end", value=10.0)
-n = col3.number_input("Points", min_value=10, max_value=100000, value=2000, step=100)
+c1, c2, c3 = st.columns(3)
+x_min = c1.number_input("x min", value=-10.0)
+x_max = c2.number_input("x max", value=10.0)
+n = c3.number_input("Points", min_value=10, max_value=100000, value=3000, step=100)
 
-if t_max <= t_min:
-    st.error("t end must be greater than t start.")
+auto_y = st.checkbox("Automatic y range", value=True)
+c4, c5 = st.columns(2)
+y_min_in = c4.number_input("y min", value=-10.0, disabled=auto_y)
+y_max_in = c5.number_input("y max", value=10.0, disabled=auto_y)
+
+if x_max <= x_min:
+    st.error("x max must be greater than x min.")
+    st.stop()
+if not auto_y and y_max_in <= y_min_in:
+    st.error("y max must be greater than y min.")
     st.stop()
 
 try:
-    x_of_t = compile_function(text)
-    tt = np.linspace(t_min, t_max, int(n))
+    f = compile_function(text)
+    xx = np.linspace(x_min, x_max, int(n))
     with np.errstate(all="ignore"):
-        xx = x_of_t(tt)
-    xx[~np.isfinite(xx)] = np.nan  # gaps at singularities
+        yy = f(xx)
+    yy[~np.isfinite(yy)] = np.nan  # gaps at singularities
 except Exception as err:
     st.error(f"Couldn't use that expression: {err}")
     st.stop()
 
-df = pd.DataFrame({"t": tt, "x(t)": xx})
-st.line_chart(df, x="t", y="x(t)")
+if auto_y:
+    finite = yy[np.isfinite(yy)]
+    if finite.size == 0:
+        st.error("The function has no finite values on this x range.")
+        st.stop()
+    lo, hi = np.percentile(finite, [1, 99])
+    if hi - lo < 1e-9:
+        lo, hi = lo - 1, hi + 1
+    pad = 0.12 * (hi - lo)
+    y_lo, y_hi = float(lo - pad), float(hi + pad)
+else:
+    y_lo, y_hi = float(y_min_in), float(y_max_in)
+
+# Break the line at huge jumps (e.g. tan(x) asymptotes) so no vertical streaks appear
+jump = np.abs(np.diff(yy)) > 2 * (y_hi - y_lo)
+yy[1:][jump] = np.nan
+
+df = pd.DataFrame({"x": xx, "y": yy})
+st.altair_chart(graph_sheet(df, x_min, x_max, y_lo, y_hi), use_container_width=True, theme=None)
