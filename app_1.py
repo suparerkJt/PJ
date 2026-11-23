@@ -128,9 +128,50 @@ def graph_sheet(df, xlo, xhi, ylo, yhi):
                 axis=alt.Axis(values=xmajor.tolist(), title="x", **label_style)),
         y=alt.Y("y:Q", scale=yscale,
                 axis=alt.Axis(values=ymajor.tolist(), title="f(x)", **label_style)),
-        tooltip=[alt.Tooltip("x:Q", format=".4g"), alt.Tooltip("y:Q", title="f(x)", format=".4g")],
     )
     layers.append(curve)
+
+    # ---- cursor: follows the mouse, snaps to the curve and projects onto both axes
+    cdf = df.dropna()
+    nearest = alt.selection_point(
+        name="cursor", fields=["x"], nearest=True,
+        on="pointerover", clear="pointerout", empty=False,
+    )
+    selector = (
+        alt.Chart(cdf).mark_point()
+        .encode(x=alt.X("x:Q", scale=xscale, axis=None), opacity=alt.value(0))
+        .add_params(nearest)
+    )
+
+    x_axis_y = 0.0 if ylo <= 0 <= yhi else ylo   # where the x-axis sits (y value)
+    y_axis_x = 0.0 if xlo <= 0 <= xhi else xlo   # where the y-axis sits (x value)
+    show = alt.condition(nearest, alt.value(1), alt.value(0))
+    cur_c = "#1f4fd8"
+    base = alt.Chart(cdf)
+    xe = alt.X("x:Q", scale=xscale, axis=None)
+    ye = alt.Y("y:Q", scale=yscale, axis=None)
+
+    vdrop = base.mark_rule(strokeDash=[5, 4], color=cur_c, strokeWidth=1.4, clip=True).encode(
+        x=xe, y=ye, y2=alt.Y2(datum=x_axis_y), opacity=show)
+    hdrop = base.mark_rule(strokeDash=[5, 4], color=cur_c, strokeWidth=1.4, clip=True).encode(
+        x=xe, x2=alt.X2(datum=y_axis_x), y=ye, opacity=show)
+    dot = base.mark_point(
+        filled=True, size=100, color="#d62728", stroke="white", strokeWidth=1.5, clip=True
+    ).encode(
+        x=xe, y=ye, opacity=show,
+        tooltip=[alt.Tooltip("x:Q", format=".4g"), alt.Tooltip("y:Q", title="f(x)", format=".4g")],
+    )
+    xlabel = base.mark_text(
+        color=cur_c, fontWeight="bold", fontSize=13, clip=True,
+        dy=-12 if x_axis_y == ylo else 14,
+    ).encode(x=xe, y=alt.Y(datum=x_axis_y), text=alt.Text("x:Q", format=".4g"), opacity=show)
+    ylabel = base.mark_text(
+        color=cur_c, fontWeight="bold", fontSize=13, clip=True,
+        align="left" if y_axis_x == xlo else "right",
+        dx=8 if y_axis_x == xlo else -8,
+    ).encode(x=alt.X(datum=y_axis_x), y=ye, text=alt.Text("y:Q", format=".4g"), opacity=show)
+
+    layers.extend([vdrop, hdrop, dot, xlabel, ylabel, selector])
 
     return (
         alt.layer(*layers)
