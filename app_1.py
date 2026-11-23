@@ -584,7 +584,7 @@ function drawOverlay() {
   const p = snapPoint(mouse.x, mouse.y);
   if (!p) { infoBox("x = " + fmtVal((mouse.x - ox) / s) + "   y = " + fmtVal((oy - mouse.y) / s), 10, "#999"); return; }
   infoBox("x = " + fmtVal(p.x) + "   y = " + fmtVal(p.y), 10, p.color);
-  const axY = clamp(oy, 0, Hh), axX = clamp(ox, 0, W), blue = "#1f4fd8";
+  const axY = clamp(oy, 0, Hh), axX = clamp(ox, 0, W), blue = "#3a3a3a";   // dark grey cursor guides and axis values
   g.save(); g.setLineDash([5, 4]); g.strokeStyle = blue; g.lineWidth = 1.4; g.beginPath();
   g.moveTo(p.px, p.py); g.lineTo(p.px, axY); g.moveTo(p.px, p.py); g.lineTo(axX, p.py); g.stroke(); g.restore();
   g.beginPath(); g.arc(p.px, p.py, 5.5, 0, Math.PI * 2);
