@@ -32,11 +32,12 @@ h3{margin:0;font-size:15px}
 .seg{display:inline-flex;border:1px solid #8a9a8f;border-radius:7px;overflow:hidden}
 .seg button{border:0;background:#fff;padding:3px 10px;font-size:12px;cursor:pointer;color:#1d2a22}
 .seg button.on{background:#2f7d4f;color:#fff}
-.row{display:flex;align-items:center;gap:6px;margin-bottom:4px}
+.row{display:flex;align-items:flex-start;gap:6px;margin-bottom:4px}
+.row .dot,.row .del{margin-top:3px}
 .dot{width:20px;height:20px;border-radius:50%;border:2px solid;cursor:pointer;flex:0 0 20px;padding:0}
-.row input,#calcIn{flex:1;min-width:0;padding:6px 8px;font-size:14px;border:1px solid #b5c2b9;
+.row textarea,#calcIn{flex:1;min-width:0;padding:6px 8px;font-size:14px;border:1px solid #b5c2b9;
   border-radius:6px;font-family:ui-monospace,Menlo,Consolas,monospace;background:#fff;color:#1d2a22}
-.row input:focus,#calcIn:focus{outline:2px solid #2f7d4f;border-color:#2f7d4f}
+.row textarea:focus,#calcIn:focus{outline:2px solid #2f7d4f;border-color:#2f7d4f}
 .del{border:0;background:none;font-size:16px;color:#777;cursor:pointer;padding:0 4px}
 .err{color:#b3261e;font-size:12px;margin:-2px 0 4px 26px}
 .link{border:1px dashed #8a9a8f;background:none;border-radius:6px;padding:4px 10px;
@@ -67,7 +68,8 @@ select{width:100%;padding:6px;border:1px solid #b5c2b9;border-radius:6px;backgro
 .crow input{width:62px;padding:4px 6px;font-size:13px;border:1px solid #b5c2b9;border-radius:6px;
   font-family:ui-monospace,Menlo,Consolas,monospace;background:#fff;color:#1d2a22}
 .crow input:focus{outline:2px solid #2f7d4f;border-color:#2f7d4f}
-.row input:disabled{background:#f1f4f2;color:#456}
+.row textarea{display:block;resize:none;overflow:hidden;line-height:1.35;overflow-wrap:anywhere;white-space:pre-wrap}
+.row textarea:disabled{background:#f1f4f2;color:#456}
 #cOut{font-size:12.5px;line-height:1.5;min-height:18px;white-space:pre-wrap;word-break:break-word;
   font-family:ui-monospace,Menlo,Consolas,monospace}
 #cOut.bad{color:#b3261e}
@@ -750,19 +752,25 @@ function addCurve(text) {
   recompile(c); curves.push(c); return c;
 }
 function paintDot(dot, c) { dot.style.borderColor = c.color; dot.style.background = c.visible ? c.color : "transparent"; }
+function fitBox(el) {                                // grow the box so the whole equation is visible
+  if (!el) return;
+  el.style.height = "auto"; el.style.height = (el.scrollHeight + 2) + "px";
+}
+function refitAll() { curves.forEach(c => fitBox(c.inpEl)); }
 function buildRows() {
   rowsEl.innerHTML = "";
   curves.forEach((c, i) => {
     const row = document.createElement("div"); row.className = "row";
     const dot = document.createElement("button"); dot.className = "dot"; dot.title = "Show / hide"; paintDot(dot, c);
     dot.onclick = () => { c.visible = !c.visible; paintDot(dot, c); redraw(); };
-    const inp = document.createElement("input");
+    const inp = document.createElement("textarea"); inp.rows = 1;
     inp.value = c.derived ? c.label() : c.text; inp.disabled = !!c.derived; c.inpEl = inp; inp.placeholder = "y = x^2,  x^2+y^2=9,  y > x ..."; inp.spellcheck = false; inp.autocomplete = "off";
     inp.addEventListener("focus", () => { lastFocus = inp; });
-    inp.addEventListener("input", () => { c.text = inp.value; recompile(c); c.errEl.textContent = c.err; c.errEl.style.display = c.err ? "" : "none"; refreshCalcUI(); redraw(); });
+    inp.addEventListener("keydown", e => { if (e.key === "Enter") e.preventDefault(); });   // one equation per box
+    inp.addEventListener("input", () => { if (inp.value.includes("\n")) inp.value = inp.value.replace(/\n/g, " "); fitBox(inp); c.text = inp.value; recompile(c); c.errEl.textContent = c.err; c.errEl.style.display = c.err ? "" : "none"; refreshCalcUI(); redraw(); });
     const del = document.createElement("button"); del.className = "del"; del.textContent = "✕"; del.title = "Remove";
     del.onclick = () => { removeCurve(c); if (lastFocus === inp) lastFocus = calcIn; buildRows(); redraw(); };
-    row.append(dot, inp, del); rowsEl.append(row);
+    row.append(dot, inp, del); rowsEl.append(row); fitBox(inp);
     const er = document.createElement("div"); er.className = "err"; er.textContent = c.err; er.style.display = c.err ? "" : "none";
     c.errEl = er; rowsEl.append(er);
   });
@@ -770,7 +778,7 @@ function buildRows() {
 }
 document.getElementById("addRow").onclick = () => {
   addCurve(""); buildRows(); redraw();
-  const inputs = rowsEl.querySelectorAll("input"); inputs[inputs.length - 1].focus();
+  const inputs = rowsEl.querySelectorAll("textarea"); inputs[inputs.length - 1].focus();
 };
 document.getElementById("clearPins").onclick = () => { pins = []; draw(); };
 document.getElementById("reset").onclick = () => { touched = false; reset(); redraw(); };
@@ -892,7 +900,7 @@ function evalNum(str) {
 
 function selCurve() { const id = +cFn.value; return curves.find(c => c.id === id && fnOf(c)); }
 function refreshCalcUI() {
-  curves.forEach(c => { if (c.derived && c.inpEl) c.inpEl.value = c.label(); });
+  curves.forEach(c => { if (c.derived && c.inpEl) { c.inpEl.value = c.label(); fitBox(c.inpEl); } });
   const prev = cFn.value; cFn.innerHTML = "";
   curves.filter(c => fnOf(c)).forEach(c => {
     const o = document.createElement("option"); o.value = c.id; o.textContent = srcName(c); cFn.append(o);
@@ -999,8 +1007,9 @@ function drawTangent() {
 addCurve("(0.22t cos(t), 0.22t sin(t)), 0 <= t <= 8pi"); addCurve("x^2 + y^2 = 9"); addCurve("y = x^2 / 4 - 2");
 buildRows();
 if (window.ResizeObserver) new ResizeObserver(resize).observe(plotcol);
-window.addEventListener("resize", resize);
-resize();
+window.addEventListener("resize", () => { resize(); refitAll(); });
+window.addEventListener("load", refitAll);
+resize(); refitAll();
 </script>
 </body></html>
 """
