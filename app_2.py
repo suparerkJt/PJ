@@ -81,6 +81,7 @@ select{width:100%;padding:6px;border:1px solid #b5c2b9;border-radius:6px;backgro
       </div>
       <div id="rows"></div>
       <button class="link" id="addRow">+ Add equation</button>
+      <div style="font-size:11px;color:#678;margin-top:6px;line-height:1.4">Parametric: <code>(cos(t), sin(t)), 0 &lt;= t &lt;= 2pi</code></div>
     </div>
     <div class="card">
       <div class="bar"><h3>Calculus</h3><span style="font-size:11px;color:#678">for y = f(x) curves</span></div>
@@ -171,7 +172,7 @@ const FN = {};
 Object.keys($f).forEach(k => { FN[k] = (["atan2", "min", "max", "mod", "ncr", "npr"].includes(k)) ? 2 : 1; });
 delete FN.pw;
 const ALIAS = { arcsin: "asin", arccos: "acos", arctan: "atan" };
-const NAMES = Object.keys(FN).concat(Object.keys(ALIAS), ["pi", "tau", "e", "x", "y", "r", "theta", "ans"])
+const NAMES = Object.keys(FN).concat(Object.keys(ALIAS), ["pi", "tau", "e", "x", "y", "r", "theta", "t", "ans"])
   .sort((a, b) => b.length - a.length);
 
 function normalize(s) {
@@ -263,7 +264,7 @@ function compileExpr(str) {
       if (n === "e") return "(" + Math.E + ")";
       if (n === "tau") return "(" + 2 * Math.PI + ")";
       if (n === "ans") return "ANS";
-      if (n === "x" || n === "y" || n === "r" || n === "theta") { used.add(n); return n === "theta" ? "th" : n; }
+      if (n === "x" || n === "y" || n === "r" || n === "theta" || n === "t") { used.add(n); return n === "theta" ? "th" : n; }
       const name = ALIAS[n] || n, need = FN[name];
       let args = [];
       if (isOp("(")) {
@@ -297,22 +298,57 @@ function splitRel(s) {            // split at = < > <= >= outside brackets
   return { parts: parts, ops: ops };
 }
 
-// Returns {kind:'explicit'|'implicit'|'ineq', fn(x,y), op?} or {empty:true}; throws on errors.
+// Parametric curve: "(x(t), y(t)), a <= t <= b"  (range optional, default 0 <= t <= 2pi). Returns null if not parametric.
+function compileParam(s) {
+  const str = s.trim();
+  if (str[0] !== "(") return null;
+  let depth = 0, close = -1;
+  for (let i = 0; i < str.length; i++) {
+    if (str[i] === "(") depth++;
+    else if (str[i] === ")") { depth--; if (depth === 0) { close = i; break; } }
+  }
+  if (close < 0) return null;
+  const inner = str.slice(1, close); let d = 0, cut = -1;
+  for (let i = 0; i < inner.length; i++) {
+    const ch = inner[i];
+    if (ch === "(") d++; else if (ch === ")") d--;
+    else if (ch === "," && d === 0) { if (cut >= 0) throw new Error("A parametric curve has two parts: (x(t), y(t))"); cut = i; }
+  }
+  if (cut < 0) return null;
+  const A = compileExpr(inner.slice(0, cut)), B = compileExpr(inner.slice(cut + 1));
+  for (const u of [A.used, B.used]) {
+    if (u.has("x") || u.has("y") || u.has("r") || u.has("theta")) throw new Error("A parametric curve uses only the variable t");
+  }
+  if (!A.used.has("t") && !B.used.has("t")) throw new Error("Use t in a parametric curve, e.g. (cos(t), sin(t))");
+  let t0 = 0, t1 = 2 * Math.PI; const rest = str.slice(close + 1).trim();
+  if (rest) {
+    const m = /^,?\s*(.+?)\s*[<≤]\s*t\s*[<≤]\s*(.+)$/.exec(rest);
+    if (!m) throw new Error("After (x(t), y(t)) write a range such as  , 0 <= t <= 2pi");
+    t0 = evalNum(m[1]); t1 = evalNum(m[2]);
+    if (!(t1 > t0)) throw new Error("The range must increase: a <= t <= b with a < b");
+  }
+  return { kind: "param", t0: t0, t1: t1,
+    fx: new Function("t", "return " + A.src), fy: new Function("t", "return " + B.src) };
+}
+
+// Returns {kind:'explicit'|'implicit'|'ineq'|'param', ...} or {empty:true}; throws on errors.
 function compileCurve(text) {
   const s = normalize(text);
   if (!s.trim()) return { empty: true };
+  const pc = compileParam(s); if (pc) return pc;
   const sp = splitRel(s);
   if (sp.ops.length > 1) throw new Error("Only one = or inequality sign is allowed");
   const polar = u => u.has("r") || u.has("theta");
   const mk = (src, pol) => new Function("x", "y",
     (pol ? "const r=Math.hypot(x,y),th=Math.atan2(y,x)/K;" : "") + "return " + src);
-  const A = compileExpr(sp.parts[0]);
+  const noT = u => { if (u.has("t")) throw new Error('"t" is only for parametric curves, e.g. (cos(t), sin(t))'); };
+  const A = compileExpr(sp.parts[0]); noT(A.used);
   if (sp.ops.length === 0) {
     const pol = polar(A.used);
     return (A.used.has("y") || pol) ? { kind: "implicit", fn: mk(A.src, pol) } : { kind: "explicit", fn: mk(A.src, false) };
   }
   if (!sp.parts[1].trim()) throw new Error("Nothing on the right of " + sp.ops[0]);
-  const B = compileExpr(sp.parts[1]), op = sp.ops[0];
+  const B = compileExpr(sp.parts[1]), op = sp.ops[0]; noT(B.used);
   const pol = polar(A.used) || polar(B.used);
   if (op === "=") {
     if (A.src === "y" && !B.used.has("y") && !pol) return { kind: "explicit", fn: mk(B.src, false) };
@@ -435,6 +471,24 @@ function drawExplicit(c) {
   g.stroke(); g.restore();
 }
 
+// Parametric curves (x(t), y(t)): sample t finely and join the points.
+function drawParam(c) {
+  const o = c.obj, N = 4000, dt = (o.t1 - o.t0) / N;
+  g.save(); g.beginPath(); g.rect(0, 0, W, Hh); g.clip();
+  g.strokeStyle = c.color; g.lineWidth = 2.6; g.lineJoin = "round"; g.lineCap = "round"; g.beginPath();
+  let pen = false, qx = 0, qy = 0;
+  for (let i = 0; i <= N; i++) {
+    const t = o.t0 + i * dt, x = o.fx(t), y = o.fy(t);
+    if (!isFinite(x) || !isFinite(y)) { pen = false; continue; }
+    const px = ox + x * s, py = oy - y * s;
+    if (Math.abs(px) > 1e6 || Math.abs(py) > 1e6) { pen = false; continue; }
+    if (pen && Math.hypot(px - qx, py - qy) > Hh * 1.5) pen = false;      // jump: lift the pen
+    if (pen) g.lineTo(px, py); else g.moveTo(px, py);
+    pen = true; qx = px; qy = py;
+  }
+  g.stroke(); g.restore();
+}
+
 // Implicit curves F(x, y) = 0 by marching squares.
 function drawContour(fn, color, dashed) {
   const cs = 3, nx = Math.ceil(W / cs), ny = Math.ceil(Hh / cs), stride = nx + 1;
@@ -543,6 +597,7 @@ function renderBase() {
   for (const c of curves) {
     if (!c.visible || !c.obj || !c.obj.kind) continue;
     if (c.obj.kind === "explicit") drawExplicit(c);
+    else if (c.obj.kind === "param") drawParam(c);
     else if (c.obj.kind === "implicit") drawContour(c.obj.fn, c.color, false);
     else drawContour(c.obj.fn, c.color, c.obj.op === "<" || c.obj.op === ">");
   }
@@ -561,6 +616,15 @@ function snapPoint(mx, my) {
     if (c.obj.kind === "explicit") {
       const x = (mx - ox) / s, v = f(x, 0);
       if (isFinite(v)) { const py = oy - v * s; cand = { x: x, y: v, px: mx, py: py, d: Math.abs(py - my) }; }
+    } else if (c.obj.kind === "param") {
+      const o = c.obj, N = 3000, dt = (o.t1 - o.t0) / N; let bd = 1e18, bx = 0, by = 0;
+      for (let i = 0; i <= N; i++) {
+        const x = o.fx(o.t0 + i * dt), y = o.fy(o.t0 + i * dt);
+        if (!isFinite(x) || !isFinite(y)) continue;
+        const d = Math.hypot(ox + x * s - mx, oy - y * s - my);
+        if (d < bd) { bd = d; bx = x; by = y; }
+      }
+      if (bd <= 30) cand = { x: bx, y: by, px: ox + bx * s, py: oy - by * s, d: bd };
     } else {
       let x = (mx - ox) / s, y = (oy - my) / s; const h = 0.5 / s;
       const grad = (a, b) => [(f(a + h, b) - f(a - h, b)) / (2 * h), (f(a, b + h) - f(a, b - h)) / (2 * h)];
@@ -932,7 +996,7 @@ function drawTangent() {
 }
 
 // ==== START
-addCurve("y = sin(x)"); addCurve("x^2 + y^2 = 9"); addCurve("y = x^2 / 4 - 2");
+addCurve("(0.22t cos(t), 0.22t sin(t)), 0 <= t <= 8pi"); addCurve("x^2 + y^2 = 9"); addCurve("y = x^2 / 4 - 2");
 buildRows();
 if (window.ResizeObserver) new ResizeObserver(resize).observe(plotcol);
 window.addEventListener("resize", resize);
