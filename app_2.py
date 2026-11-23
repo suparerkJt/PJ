@@ -777,6 +777,160 @@ PAD.forEach(([label, val, cls]) => {
   padEl.append(b);
 });
 
+// ==== CALCULUS
+const cFn = document.getElementById("cFn"), cOut = document.getElementById("cOut");
+const x0In = document.getElementById("x0"), iaIn = document.getElementById("ia"), ibIn = document.getElementById("ib");
+[x0In, iaIn, ibIn].forEach(el => el.addEventListener("focus", () => { lastFocus = el; }));
+
+const fnOf = c => (c && c.obj && c.obj.kind === "explicit") ? (x => c.obj.fn(x, 0)) : null;
+const srcName = c => c.derived ? c.label() : c.text.trim();
+function say(msg, bad) { cOut.textContent = msg; cOut.className = bad ? "bad" : ""; }
+function fmtD(v) {                                   // derivative / integral output: 8 significant digits
+  if (!isFinite(v)) return fmtResult(v);
+  if (Math.abs(v) < 1e-7) return "0";
+  return fmtResult(parseFloat(v.toPrecision(8)));
+}
+// 5-point stencils (error ~h^4)
+function d1(f, x) { const h = 1e-3 * Math.max(1, Math.abs(x)); return (8 * (f(x + h) - f(x - h)) - (f(x + 2 * h) - f(x - 2 * h))) / (12 * h); }
+function d2(f, x) { const h = 1e-2 * Math.max(1, Math.abs(x)); return (-f(x + 2 * h) + 16 * f(x + h) - 30 * f(x) + 16 * f(x - h) - f(x - 2 * h)) / (12 * h * h); }
+function simpsonN(f, a, b, n) {
+  if (n % 2) n++;
+  const h = (b - a) / n; let t = f(a) + f(b);
+  for (let i = 1; i < n; i++) t += f(a + i * h) * (i % 2 ? 4 : 2);
+  return t * h / 3;
+}
+function integrate(f, a, b) {                        // adaptive Simpson on 16 panels
+  if (a === b) return 0;
+  let sign = 1; if (a > b) { const t = a; a = b; b = t; sign = -1; }
+  const rec = (a, b, fa, fm, fb, whole, eps, d) => {
+    const m = (a + b) / 2, flm = f((a + m) / 2), frm = f((m + b) / 2);
+    const left = (m - a) / 6 * (fa + 4 * flm + fm), right = (b - m) / 6 * (fm + 4 * frm + fb), delta = left + right - whole;
+    if (!isFinite(delta)) return NaN;
+    if (d <= 0 || Math.abs(delta) <= 15 * eps) return left + right + delta / 15;
+    return rec(a, m, fa, flm, fm, left, eps / 2, d - 1) + rec(m, b, fm, frm, fb, right, eps / 2, d - 1);
+  };
+  let total = 0; const P = 16, w = (b - a) / P;
+  for (let i = 0; i < P; i++) {
+    const lo = a + i * w, hi = i === P - 1 ? b : lo + w, mid = (lo + hi) / 2;
+    const fa = f(lo), fm = f(mid), fb = f(hi);
+    if (!isFinite(fa + fm + fb)) return NaN;
+    total += rec(lo, hi, fa, fm, fb, (hi - lo) / 6 * (fa + 4 * fm + fb), 1e-10 / P, 18);
+  }
+  return sign * total;
+}
+function evalNum(str) {
+  const r = compileExpr(str);
+  if (r.used.size) throw new Error("use a plain number (pi, 2*pi/3 ... are fine)");
+  const v = new Function("return " + r.src)();
+  if (typeof v !== "number" || !isFinite(v)) throw new Error("not a finite number");
+  return v;
+}
+
+function selCurve() { const id = +cFn.value; return curves.find(c => c.id === id && fnOf(c)); }
+function refreshCalcUI() {
+  curves.forEach(c => { if (c.derived && c.inpEl) c.inpEl.value = c.label(); });
+  const prev = cFn.value; cFn.innerHTML = "";
+  curves.filter(c => fnOf(c)).forEach(c => {
+    const o = document.createElement("option"); o.value = c.id; o.textContent = srcName(c); cFn.append(o);
+  });
+  if (!cFn.options.length) {
+    const o = document.createElement("option"); o.textContent = "(add a function such as y = sin(x))"; o.disabled = true; cFn.append(o);
+  } else if ([...cFn.options].some(o => o.value === prev)) cFn.value = prev;
+}
+function removeCurve(c) {
+  const gone = new Set([c]); let again = true;
+  while (again) { again = false; curves.forEach(d => { if (d.derived && gone.has(d.src) && !gone.has(d)) { gone.add(d); again = true; } }); }
+  curves = curves.filter(d => !gone.has(d));
+  if (area && gone.has(area.c)) area = null;
+  if (tangent && gone.has(tangent.c)) tangent = null;
+}
+
+function addDerived(kind) {
+  const src = selCurve();
+  if (!src) return say("Pick a function y = f(x) first.", true);
+  let a = 0;
+  if (kind === "int") { try { a = evalNum(iaIn.value); } catch (e) { return say("Lower limit a: " + e.message, true); } }
+  const get = () => fnOf(src); let fn, label;
+  if (kind === "d1") { fn = x => { const f = get(); return f ? d1(f, x) : NaN; }; label = () => "d/dx [" + srcName(src) + "]"; }
+  else if (kind === "d2") { fn = x => { const f = get(); return f ? d2(f, x) : NaN; }; label = () => "d²/dx² [" + srcName(src) + "]"; }
+  else {
+    fn = x => {
+      const f = get(); if (!f) return NaN; if (x === a) return 0;
+      return simpsonN(f, a, x, 2 * Math.ceil(clamp(Math.abs(x - a) * s / 6, 4, 60)));
+    };
+    label = () => "∫ from " + fmtVal(a) + " [" + srcName(src) + "] dx";
+  }
+  curves.push({ id: nextId++, text: "", label: label, derived: true, src: src, color: COLORS[nextColor++ % COLORS.length],
+    visible: true, obj: { kind: "explicit", fn: x => fn(x) }, err: "" });
+  buildRows(); cFn.value = String(src.id); redraw();
+  say(kind === "int" ? "Plotted the antiderivative F(x) = ∫ from " + fmtVal(a) + " to x. Change a first to shift it."
+                     : "Plotted the " + (kind === "d1" ? "first" : "second") + " derivative. Its roots are the " +
+                       (kind === "d1" ? "turning points of f" : "inflection candidates of f") + " (see the marked points).");
+}
+
+function doTangent() {
+  const c = selCurve(); if (!c) return say("Pick a function y = f(x) first.", true);
+  let x0; try { x0 = evalNum(x0In.value); } catch (e) { return say("x₀: " + e.message, true); }
+  const f = fnOf(c), y0 = f(x0), m = d1(f, x0);
+  if (!isFinite(y0) || !isFinite(m)) return say("f is not defined or not differentiable at x₀.", true);
+  const b = y0 - m * x0; tangent = { c: c, x0: x0 };
+  say("f(x₀)  = " + fmtD(y0) + "\nf′(x₀) = " + fmtD(m) + "\nf″(x₀) = " + fmtD(d2(f, x0)) +
+      "\ntangent: y = " + fmtD(m) + "·x " + (b < 0 ? "− " : "+ ") + fmtD(Math.abs(b)));
+  redraw();
+}
+function doDefinite() {
+  const c = selCurve(); if (!c) return say("Pick a function y = f(x) first.", true);
+  let a, b; try { a = evalNum(iaIn.value); } catch (e) { return say("a: " + e.message, true); }
+  try { b = evalNum(ibIn.value); } catch (e) { return say("b: " + e.message, true); }
+  const f = fnOf(c), val = integrate(f, a, b);
+  const abs = simpsonN(x => Math.abs(f(x)), Math.min(a, b), Math.max(a, b), 4000);
+  if (!isFinite(val)) return say("The integral is undefined or diverges on [a, b].", true);
+  area = { c: c, a: a, b: b };
+  say("∫ from " + fmtD(a) + " to " + fmtD(b) + " of f dx = " + fmtD(val) +
+      "\nArea between curve and x-axis = " + (isFinite(abs) ? fmtD(abs) : "n/a"));
+  redraw();
+}
+document.getElementById("bD1").onclick = () => addDerived("d1");
+document.getElementById("bD2").onclick = () => addDerived("d2");
+document.getElementById("bInt").onclick = () => addDerived("int");
+document.getElementById("bTan").onclick = doTangent;
+document.getElementById("bDef").onclick = doDefinite;
+document.getElementById("cClear").onclick = () => { tangent = null; area = null; say(""); redraw(); };
+
+function drawArea() {                                // shaded region between f and the x-axis on [a, b]
+  if (!area || !area.c.visible) return;
+  const f = fnOf(area.c); if (!f) return;
+  const lo = Math.min(area.a, area.b), hi = Math.max(area.a, area.b);
+  const p0 = ox + lo * s, p1 = ox + hi * s;
+  g.save(); g.beginPath(); g.rect(0, 0, W, Hh); g.clip();
+  g.globalAlpha = 0.28; g.fillStyle = area.c.color; g.beginPath();
+  let run = false, last = 0;
+  for (let px = Math.max(0, Math.floor(p0)); px <= Math.min(W, Math.ceil(p1)) + 1; px++) {
+    const v = f(clamp((px - ox) / s, lo, hi));
+    if (!isFinite(v) || px > Math.ceil(p1) + 0.5) { if (run) { g.lineTo(last, oy); g.closePath(); run = false; } continue; }
+    const py = clamp(oy - v * s, -1e5, 1e5);
+    if (!run) { g.moveTo(px, oy); run = true; }
+    g.lineTo(px, py); last = px;
+  }
+  if (run) { g.lineTo(last, oy); g.closePath(); }
+  g.fill(); g.globalAlpha = 1;
+  g.setLineDash([5, 4]); g.strokeStyle = area.c.color; g.lineWidth = 1.4; g.beginPath();
+  g.moveTo(p0, 0); g.lineTo(p0, Hh); g.moveTo(p1, 0); g.lineTo(p1, Hh); g.stroke();
+  g.restore();
+}
+function drawTangent() {
+  if (!tangent || !tangent.c.visible) return;
+  const f = fnOf(tangent.c); if (!f) return;
+  const x0 = tangent.x0, y0 = f(x0), m = d1(f, x0);
+  if (!isFinite(y0) || !isFinite(m)) return;
+  g.save(); g.beginPath(); g.rect(0, 0, W, Hh); g.clip();
+  g.strokeStyle = "#111"; g.lineWidth = 1.8; g.setLineDash([8, 5]); g.beginPath();
+  g.moveTo(0, oy - (y0 + m * (-ox / s - x0)) * s); g.lineTo(W, oy - (y0 + m * ((W - ox) / s - x0)) * s); g.stroke();
+  g.setLineDash([]); g.beginPath(); g.arc(ox + x0 * s, oy - y0 * s, 5, 0, Math.PI * 2);
+  g.fillStyle = "#fff"; g.fill(); g.lineWidth = 2.2; g.stroke(); g.restore();
+  haloText("slope " + fmtD(m), ox + x0 * s + 9, oy - y0 * s + 9, "#111", "bold 12px " + FONT, "left", "top");
+}
+
 // ==== START
 addCurve("y = sin(x)"); addCurve("x^2 + y^2 = 9"); addCurve("y = x^2 / 4 - 2");
 buildRows();
